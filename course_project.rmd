@@ -1,0 +1,246 @@
+---
+title: "Practical Machine Learning Course Project"
+
+output: html_document
+---
+##Introduction
+
+Human Activity Recognition (HAR) has emerged as a key research area in the last few years and is gaining increasing attention.  There are many potential applications for HAR, like: elderly monitoring, life log systems for monitoring energy expenditure and for supporting weight-loss programs, and digital assistants for weight lifting exercises. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  The approach used here with the Weight Lifting Exercises dataset is to investigate "how (well)" an activity was performed by the wearer. Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E) (see *http://groupware.les.inf.puc-rio.br/har*).Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants and associated data to predict the manner in which they did the exercise.
+
+##Methods, Data Processing & Exploratory Data Analysis
+
+There were two data sets provided:*pml-training.csv* and *pml-testing.csv*. As stated above, the goal of the project is to predict the manner in which they did the exercise and this is the **classe** variable in the training set. The pml-training data set was used to select the model, cross-validate and a validation subset of data was used to estimate the out of sample error for the finally selected model.  The pml-testing data was used with the final selected model to predict 20 test cases for the purpose of the course project.
+
+The training data set was read in and using the *caret* package, was randomly split into a training (**train**) and validation (**valid**) data set in an approx 70% to 30% ratio.
+
+
+```{r,message=FALSE,warning=FALSE}
+##ensure working directory is set to where the data is
+###load required libraries - assume they are installed if necessary
+
+library(plyr)
+library(caret)
+library(randomForest)
+set.seed(543)
+data<- read.csv("pml-training.csv", header=TRUE)
+testing<-read.csv("pml-testing.csv",header=TRUE)
+
+
+
+inTrain <- createDataPartition(y=data$classe,p=0.7, list=FALSE)
+
+train <- data[inTrain,]
+valid <- data[-inTrain,]
+dim(train);dim(valid)
+table(train$classe)
+head (names(train),20)
+#summary(train)
+s<-c(12,18)
+summary (train[,s])
+
+```
+
+As can be seen from the dimension statements there were 13,737 observations in the training dataset and 5,885 observations in the validation dataset.  The validation dataset was set aside and only used to estimate the out of sample error (see below).
+
+There were 160 variables in the training data set (20 of the names are listed as an example). Initially a summary of all the 160 variables was examined ((using the *summary* function - output too large for this report).  It was clear that there were a substantial number of variables **all** with either the same number of *NA*'s or *blank* values. Two examples are given above. In this case the number is identical across a large number of variables - either 13,447 NA values or 13,447 blank values. It was decided that these variables provided too little information to be of use in any classification model - so the next step was to identify and remove them.  Of course the training data set could vary in it's numbers each time we run the selection - so to generalize we used one of the variables to ensure that we found this number each time (**xmiss**).
+
+```{r,message=FALSE,warning=FALSE,fig.width=6,fig.height=6}
+### Find variables that have "xmiss" no of values blank or NA
+xmiss<-sum(is.na(train$max_roll_belt))
+miss<-rep(0,ncol(train))
+miss<-as.integer(miss)
+for (i in 1:ncol(train)) {
+               if (sum(is.na(train[,i]))==xmiss) miss[i]<-1
+        }
+
+#table(miss)
+blank<-rep(0,ncol(train))
+blank<-as.integer(blank)
+
+for (i in 1:ncol(train)) {
+        y<- count(train[,i]=="")       
+        x<-dim(y)
+                if (x[1]==1) next
+                if (y[2,2]==xmiss) blank[i]<-1            
+}
+#table(blank)
+table (miss, blank)
+
+allmiss<-rep(0,ncol(train))
+allmiss<-as.integer(allmiss)
+for (i in 1:ncol(train)) {
+        if((miss[i]==1)|(blank[i]==1)) allmiss[i]<-1
+}
+
+table(allmiss)
+
+trainvar<- train[,allmiss==0]
+trainvar<- trainvar[,-1]
+names(trainvar)
+
+##exploratory sample code - commented out so as not give too much output
+
+# 
+# for (i in 6:58) {
+#         hist(trainvar[,i])
+# }
+# plot(trainvar$roll_belt,trainvar$pitch_belt,col=trainvar$classe)
+
+# 
+# ###pairwise plots
+# 
+
+ l1<-1:5;l2<-6:10;l3 <-11:20
+ pairs(trainvar[,l3],main="Fig. 1 Example pairs plot",col=trainvar$classe)
+        
+```
+
+There were 67 variables with large numbers (13,447) of NA values and 60 variables with a large (common) number of blank values.  The crosstab of the variables **miss** and **blank** show the distribution, and the table of the variable **allmiss** shows that there were 60 variables remaining that had sufficient data to be included in the analysis.  Finally the first variable **X** which was an index variable was also eliminated.  That left 59 variables that remained in the analysis training data set **trainvar** and the names of these are given above.
+
+Each of these variables were plotted and examined (with histograms and pairwise plots).  Some were clearly bimodal and some slightly skewed - but generally it was decided to leave them untransformed. Figure 1 is an example plot.
+
+To see if we could reduce the data set even further a principal components analysis was undertaken (using the *preprocess* function in caret).
+
+
+```{r,message=FALSE,warning=FALSE}
+### principal component analysis        
+        
+pp<-preProcess(trainvar[,-59],method="pca")
+ppout<-predict(pp,trainvar[,-59])
+pp
+totvarpc<-0
+varpc<-rep(0,ncol(ppout))
+for (i in 5:ncol(ppout)){
+        varpc[i]<-var(ppout[,i])
+        totvarpc<-totvarpc+varpc[i]
+}
+#totvarpc
+varpc<-varpc[-(1:4)]
+varpcperc<-(varpc/totvarpc)*100
+x<-1:length(varpcperc)
+#plot(x,varpcperc)
+cumperc<-rep(0,length(varpcperc))
+cumperc[1]<-varpcperc[1]
+for (j in 2:length(varpcperc)){
+        cumperc[j]<-varpcperc[j]+cumperc[j-1]
+}
+plot(x,cumperc,main="Fig 2. Cumuative percentage of variance explained",ylab="cumulative % variance", xlab="Principal Component")
+
+plot(ppout$PC1,ppout$PC2, col=trainvar$classe, main="Fig 3. Plot of first 2 PC's with colour representing Classe")
+plot(ppout$PC1,ppout$PC2, col=trainvar$user_name,main="Fig 4. Plot of first 2 PC's with colour representing Subject")
+
+
+```
+
+As can be seen, 26 components captured 95% of the variability. The cumulative percentage explained by each PC was calculated and then plotted (Fig. 2).  As can be seen the first two principal components account for about 20% of the variability and the first 6 for about 60%. Plotting against the first 2 components in some way is the "best" 2 dimensional plot of the variability in this data.  Several plots were examined, but two are shown here. Fig. 3 shows the **classe** variable and Fig. 4 the subject plotted against the first two PCs.  In the first it is clear from the colours that the classe variable is overlaps in all cases - so these two components are not good at distinguishing how well a person did.  However, the PC plot by subject shows a very clear division by the 6 individuals.  It is clear we could reduce dimensionality to these 2 PCs if we wanted to predict who the subject was based on these data!  In any case given the significant reduction in number of variables, it was decided to use the principal components in one of the analyses.
+
+Three different models were built try and predict the manner in which the participants did the exercise - the **classe** variable.  First a linear discriminant analysis was used using the original 58 selected variables (excluding *classe*) (method="lda" in caret). Secondly we used linear discriminant analysis using the principal components. Finally we built a random forest model using the untransformed 58 variables (method="rf" in caret).  For the two lda models we used 10 fold cross-validation repeated 10 times.  The random forest algorithm uses 25 bootstrap resamplings for it's cross validation.  The resulting output from each model was examined and a final model selection was made.  This was used on the **valid** validation data set to get the out of sample estimate of error.
+
+##Results
+###Linear Discriminant Analysis with original 58 selected variables
+
+```{r,message=FALSE,warning=FALSE}
+###Model fitting
+
+###lda with original variables
+fitControl <- trainControl(method = "repeatedcv",number = 10,repeats = 10) ##k-fold repeat cv
+set.seed(346)
+modlda = train(trainvar$classe ~ .,method="lda", data=trainvar,trControl = fitControl)
+modlda
+predlda1<-predict(modlda,trainvar)
+conf<-table(predlda1,trainvar$classe)
+print ("Confusion Matrix");conf
+totclasse<-table(trainvar$classe)
+
+percorrect<-rep(0,5)
+for (i in 1:5){
+        percorrect[i]<-((conf[i,i]/totclasse[i])*100)
+}
+print("Percent correct for each category");percorrect
+```
+
+As can be seen there was about 86% accuracy and a kappa of 0.81 - which is reasonable (for a good discussion of Kappa see *http://stats.stackexchange.com/questions/82162/kappa-statistic-in-plain-english*.  Though the accuracy is good, as can be seen from the confusion matrix (and the kappa) for classe B there was an accuracy rate under 75% - which is not every good, and for classe D it was 84%.
+
+###Linear Discriminant Analysis with principal components
+
+Here we used the 26 principal components we generated in the earlier pre-processing step in a linear discriminant analysis. Again for cross validation we used k-fold repeat cv with 10 folds and 10 repeats.
+
+
+```{r,message=FALSE,warning=FALSE}
+
+###lda with principal components
+fitControlpc <- trainControl(method = "repeatedcv",number = 10,repeats = 10)
+set.seed(346)
+modldapc = train(trainvar$classe ~ .,method="lda", data=ppout, trControl = fitControlpc)
+modldapc
+predlda2<-predict(modldapc,ppout)
+conf2<-table(predlda2,trainvar$classe)
+print ("Confusion Matrix");conf2
+totclasse<-table(trainvar$classe)
+
+percorrect<-rep(0,5)
+for (i in 1:5){
+        percorrect[i]<-((conf2[i,i]/totclasse[i])*100)
+}
+print("Percent correct for each category");percorrect
+```
+
+The results from the lda using the principal components was disappointing.  The accuracy was only 75% with a Kappa of 69%.  The confusion matrix showed that several categories had particularly poor prediction - 67% for Classe B and D.
+
+### Random Forest 
+
+The final model tried was a random forests classification model.  The model was trained using the training dataset with the 58 variables described above, using the caret package.  The model cross validates using bootstrapping and 25 repetitions to to tune the parameters and end up with a final model.
+
+```{r,message=FALSE,warning=FALSE}
+
+###random forest
+
+modFit <- train(trainvar$classe ~ .,data=trainvar,method="rf")
+
+modFit
+
+predrf<-predict(modFit,trainvar)
+print("Confusion Matrix")
+table(predrf,trainvar$classe)
+
+```
+
+The best model was with an mtry (number of random variables used in each tree) of 41.  This model performed very well with an accuracy of 99.8% and a kappa of 0.998. This can be seen in the confusion matrix. 
+
+This was the best performing model by far so was chosen as the final model.  Clearly there is a risk of over fitting so the next step was to look at out of sample error using the validation data set.
+
+### Out of sample error
+
+To estimate the out of sample error we used the validation data set **valid** generated above.  We apply the model trained on the training set to see how good it performs in the validation data set.  This is a one off - the validation data set has not been touched or used in training the models - so gives a good estimate of out of sample error.
+
+```{r,message=FALSE,warning=FALSE}
+###
+###Out of sample error
+###
+
+pred <- predict(modFit,valid)
+testpred<-table(pred,valid$classe)
+#testpred
+confusionMatrix(testpred)
+
+
+```
+
+As can be seen, the model predicted all but 5 data points correctly (from a total of 5885 observations). This gave an accuracy of 99.9% (a CI is given above).  Kappa was 0.9985.  So the evidence indicates that this is not over fitted and that it is highly successful at predicting **classe** in this sample and that the out of sample error is low.
+
+### Prediction Assignment
+
+Part of the assignment was to predict the values for **classe** from a testing data set *pml-testing.csv* using the final model selected. There was no "correct" data - so no way of checking accuracy etc.  
+
+```{r,message=FALSE,warning=FALSE}
+
+##prediction for the testing data set provided
+
+##use model to predict from testing dataset
+predtest <- predict(modFit,testing)
+predtest ##lists out classification
+
+```
+The variable **predtest** shows the classification on the 20 data points. These were submitted through the coursera practical machine learning course website and the resulting classifications were seen to be correct in all 20 cases - showing again that the model seems to work extremely well.
+
+
